@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use color_eyre::{Result, eyre::{eyre, WrapErr}};
 
 #[allow(unused)]
 #[derive(Debug, Deserialize)]
@@ -16,31 +17,42 @@ struct LrcResponse {
 
 use regex::Regex;
 
-pub async fn get_romanized_lyrics(track_name: &str, artist_name: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
-    let response = client.get("https://lrclib.net/api/get")
-        .query(&[("artist_name", artist_name), ("track_name", track_name)])
-        .send()
-        .await?
-        .error_for_status()?;
+use crate::models::Track;
 
-    let lyrics_data = response.json::<LrcResponse>().await?;
+pub async fn get_romanized_lyrics(track: Track) -> Result<Vec<String>> {
+    let client = reqwest::Client::new();
     
+    let response = client
+        .get("https://lrclib.net/api/get")
+        .query(&[("artist_name", track.artist.to_owned()), ("track_name", track.title.to_owned())])
+        .send()
+        .await
+        .wrap_err("failed to send request to lrclib")?
+        .error_for_status()
+        .wrap_err("lrclib returned an error status")?;
+
+    let lyrics_data = response
+        .json::<LrcResponse>()
+        .await
+        .wrap_err("failed to parse lrclib response")?;
+
     let raw_lyrics = lyrics_data.synced_lyrics
         .or(lyrics_data.plain_lyrics)
-        .ok_or("No lyrics found")?;
+        .ok_or_else(|| eyre!("no lyrics found for '{}' by '{}'", track.title, track.artist))?;
 
-    // Remove timestamps
-    let re = Regex::new(r"\[\d{2}:\d{2}\.\d{2}\]")?;
-    let cleaned_lyrics = re.replace_all(&raw_lyrics, "");
+    Ok(process_lyrics(&raw_lyrics))
+}
 
-    let romanized_block = kakasi::convert(cleaned_lyrics.as_ref()).romaji;
+fn process_lyrics(raw: &str) -> Vec<String> {
+    let timestamp_re = Regex::new(r"\[\d{2}:\d{2}\.\d{2}\]").unwrap();
+    let metadata_re = Regex::new(r"^\[.*\]$").unwrap();
 
-    // Split into lines
-    let lines = romanized_block
-        .lines()
-        .map(|s| s.trim().to_string())
-        .collect();
-
-    Ok(lines)
+    raw.lines()
+        .filter(|line| !metadata_re.is_match(line.trim()))
+        .map(|line| {
+            let cleaned = timestamp_re.replace_all(line, "");
+            let trimmed = cleaned.trim();
+            kakasi::convert(trimmed).romaji
+        })
+        .collect()
 }

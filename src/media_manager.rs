@@ -1,4 +1,4 @@
-use std::error::Error;
+use color_eyre::{Result, eyre::{eyre, WrapErr}};
 
 use windows::Media::Control::{GlobalSystemMediaTransportControlsSessionManager, GlobalSystemMediaTransportControlsSession};
 
@@ -8,7 +8,7 @@ pub struct MediaManager {
 }
 
 impl MediaManager {
-    pub async fn new() -> Result<Self, Box<dyn Error>> {
+    pub async fn new() -> Result<Self> {
         let session_manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()?.await?;
 
         Ok(Self {
@@ -17,7 +17,7 @@ impl MediaManager {
         })
     }
 
-    pub async fn refresh_session(&mut self) -> Result<(), Box<dyn Error>> {
+    pub async fn refresh_session(&mut self) -> Result<()> {
         self.spotify_session = self.session_manager
             .GetSessions()?
             .into_iter()
@@ -31,22 +31,33 @@ impl MediaManager {
         Ok(())
     }
 
-    pub async fn media_properties(&self) -> Result<(String, String), Box<dyn Error>> {
-        let media_properties = self.spotify_session
+    pub async fn media_properties(&self) -> Result<(String, String)> {
+        let session = self.spotify_session
             .as_ref()
-            .ok_or("Spotify session not active 1")?
-            .TryGetMediaPropertiesAsync()?.await?;
+            .ok_or_else(|| eyre!("spotify session not active"))?;
 
-        Ok((media_properties.Artist()?.to_string(), media_properties.Title()?.to_string()))
+        let media_properties = session
+            .TryGetMediaPropertiesAsync()
+            .wrap_err("failed to get media properties async")?
+            .await
+            .wrap_err("failed to await media properties")?;
+
+        Ok((
+            media_properties.Artist().wrap_err("failed to get artist")?.to_string(),
+            media_properties.Title().wrap_err("failed to get title")?.to_string(),
+        ))
     }
 
     #[allow(dead_code)]
-    pub async fn timeline_position(&self) -> Result<i64, Box<dyn Error>> {
-        let timeline = self.spotify_session
+    pub async fn timeline_position(&self) -> Result<i64> {
+        let session = self.spotify_session
             .as_ref()
-            .ok_or("Spotify session not active 2")?
-            .GetTimelineProperties()?;
+            .ok_or_else(|| eyre!("spotify session not active"))?;
 
-        Ok(timeline.Position()?.Duration / 10_000_000)
+        let timeline = session
+            .GetTimelineProperties()
+            .wrap_err("failed to get timeline properties")?;
+
+        Ok(timeline.Position().wrap_err("failed to get position")?.Duration / 10_000_000)
     }
 }
