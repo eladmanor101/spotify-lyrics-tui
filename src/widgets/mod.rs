@@ -1,0 +1,3 @@
+mod lyrics_view;
+
+pub use lyrics_view::LyricsView;

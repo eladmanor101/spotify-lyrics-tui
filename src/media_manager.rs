@@ -1,6 +1,10 @@
+use std::time::Duration;
+
 use color_eyre::{Result, eyre::{eyre, WrapErr}};
 
 use windows::Media::Control::{GlobalSystemMediaTransportControlsSessionManager, GlobalSystemMediaTransportControlsSession};
+
+use crate::models::Track;
 
 pub struct MediaManager {
     session_manager: GlobalSystemMediaTransportControlsSessionManager,
@@ -31,7 +35,7 @@ impl MediaManager {
         Ok(())
     }
 
-    pub async fn media_properties(&self) -> Result<(String, String)> {
+    pub async fn media_properties(&self) -> Result<Track> {
         let session = self.spotify_session
             .as_ref()
             .ok_or_else(|| eyre!("spotify session not active"))?;
@@ -42,14 +46,13 @@ impl MediaManager {
             .await
             .wrap_err("failed to await media properties")?;
 
-        Ok((
+        Ok(Track::new(
             media_properties.Artist().wrap_err("failed to get artist")?.to_string(),
             media_properties.Title().wrap_err("failed to get title")?.to_string(),
         ))
     }
-
-    #[allow(dead_code)]
-    pub async fn timeline_position(&self) -> Result<i64> {
+    
+    pub async fn timeline_position(&self) -> Result<Duration> {
         let session = self.spotify_session
             .as_ref()
             .ok_or_else(|| eyre!("spotify session not active"))?;
@@ -58,6 +61,6 @@ impl MediaManager {
             .GetTimelineProperties()
             .wrap_err("failed to get timeline properties")?;
 
-        Ok(timeline.Position().wrap_err("failed to get position")?.Duration / 10_000_000)
+        Ok(Duration::from_millis((timeline.Position().wrap_err("failed to get position")?.Duration / 10_000) as u64))
     }
 }
