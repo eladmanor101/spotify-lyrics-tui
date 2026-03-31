@@ -1,13 +1,13 @@
-use std::fmt::Display;
+use std::{fmt::Display, sync::Arc};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct Track {
-    pub artist: String,
-    pub title: String
+    pub artist: Arc<str>,
+    pub title: Arc<str>
 }
 
 impl Track {
-    pub fn new(artist: impl Into<String>, title: impl Into<String>) -> Self {
+    pub fn new(artist: String, title: String) -> Self {
         Track {
             artist: artist.into(),
             title: title.into()

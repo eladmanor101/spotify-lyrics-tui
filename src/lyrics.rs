@@ -26,7 +26,7 @@ pub async fn get_romanized_lyrics(track: Track) -> Result<LyricsContent> {
     
     let response = client
         .get("https://lrclib.net/api/get")
-        .query(&[("artist_name", track.artist.to_owned()), ("track_name", track.title.to_owned())])
+        .query(&[("artist_name", &*track.artist), ("track_name", &*track.title)])
         .send()
         .await
         .wrap_err("failed to send request to lrclib")?

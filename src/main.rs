@@ -101,12 +101,6 @@ async fn run(
             match event {
                 Event::Key(k) => match k.code {
                     KeyCode::Char('q') => action_tx.send(Action::Quit).await?,
-                    KeyCode::Char('r') => {
-                        action_tx.send(Action::FetchLyrics(Track::new(
-                            "Kobo Kanaeru",
-                            "HELP!!"
-                        ))).await?;
-                    }
                     KeyCode::Char('t') if k.kind == KeyEventKind::Press => {
                         app.auto_refresh = !app.auto_refresh;
                         if app.auto_refresh {
@@ -195,7 +189,7 @@ async fn event_task(tx: mpsc::Sender<Event>) -> Result<()> {
 }
 
 async fn media_task(mut rx: mpsc::Receiver<SpotifyAction>, tx: mpsc::Sender<Action>) -> Result<()> {
-    let mut last_track = Track::new("", "");
+    let mut last_track = Track::default();
     let mut media = MediaManager::new().await.wrap_err("failed to create media manager")?;
     let mut interval = tokio::time::interval(Duration::from_millis(500));
 
@@ -240,9 +234,9 @@ fn render(frame: &mut Frame, app: &App) {
 
             Line::from(vec![
                 " ".into(),
-                lyrics.track.artist.as_str().cyan(),
+                lyrics.track.artist.cyan(),
                 " — ".gray(),
-                lyrics.track.title.as_str().white().bold(),
+                lyrics.track.title.white().bold(),
                 format!(" [{pos}]").italic().dark_gray(),
                 " ".into(),
             ])
@@ -274,7 +268,6 @@ fn render(frame: &mut Frame, app: &App) {
     let lyrics_area = inner_area.inner(Margin::new(inner_area.width / 4, 1));
 
     const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    //let spinner = SPINNER[app.tick as usize % SPINNER.len()];
 
     match &app.lyrics_state {
         LyricsState::None => {
@@ -306,22 +299,6 @@ fn render(frame: &mut Frame, app: &App) {
             );
         }
     }
-
-    // let p = Paragraph::new(match &app.lyrics_state {
-    //     LyricsState::None => vec!["No track playing".into()],
-    //     LyricsState::Loading => vec![
-    //         Line::from(format!("{spinner} Fetching lyrics...")).yellow()
-    //     ],
-    //     LyricsState::Loaded(lyrics) => lyrics.unsynced_lines()
-    //         .into_iter()
-    //         .map(|s| Line::from(s))
-    //         .collect(),
-    //     LyricsState::Error(e) => vec![Line::from(e.as_str()).red()],
-    // })
-    // .wrap(Wrap { trim: false })
-    // .centered();
-
-    //frame.render_widget(p, lyrics_area);
 }
 
 fn setup_tracing() -> Result<tracing_appender::non_blocking::WorkerGuard> {

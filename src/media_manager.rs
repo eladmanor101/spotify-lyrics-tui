@@ -48,7 +48,7 @@ impl MediaManager {
 
         Ok(Track::new(
             media_properties.Artist().wrap_err("failed to get artist")?.to_string(),
-            media_properties.Title().wrap_err("failed to get title")?.to_string(),
+            media_properties.Title().wrap_err("failed to get title")?.to_string()
         ))
     }
     
