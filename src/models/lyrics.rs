@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::models::Track;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SyncLine {
     pub start_time: Duration,
     pub text: String

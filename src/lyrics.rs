@@ -54,31 +54,35 @@ fn process_lyrics(raw: &str, is_sync: bool) -> LyricsContent {
     if is_sync {
         let timestamp_re = Regex::new(r"^\[(?<min>\d{2}):(?<sec>\d{2})\.(?<ms>\d{2})\]").unwrap();
 
-        LyricsContent::Synced(
-            raw.lines()
-                .filter_map(|line| {
-                    let line = line.trim();
+        let mut lines = raw.lines()
+            .filter_map(|line| {
+                let line = line.trim();
 
-                    if metadata_re.is_match(line) {
-                        return None;
-                    }
+                if metadata_re.is_match(line) {
+                    return None;
+                }
 
-                    let caps = timestamp_re.captures(line)?;
-                    let mins: u64 = caps["min"].parse().ok()?;
-                    let secs: u64 = caps["sec"].parse().ok()?;
-                    let ms: u64 = caps["ms"].parse().ok()?;
-                    let position = Duration::from_mins(mins) + Duration::from_secs(secs) + Duration::from_millis(ms * 10);
+                let caps = timestamp_re.captures(line)?;
+                let mins: u64 = caps["min"].parse().ok()?;
+                let secs: u64 = caps["sec"].parse().ok()?;
+                let ms: u64 = caps["ms"].parse().ok()?;
+                let position = Duration::from_mins(mins) + Duration::from_secs(secs) + Duration::from_millis(ms * 10);
 
-                    let whole_match = caps.get(0).unwrap();
-                    let text_part = line[whole_match.end()..].trim();
+                let whole_match = caps.get(0).unwrap();
+                let text_part = line[whole_match.end()..].trim();
 
-                    Some(SyncLine {
-                        start_time: position,
-                        text: kakasi::convert(text_part).romaji
-                    })
+                Some(SyncLine {
+                    start_time: position,
+                    text: kakasi::convert(text_part).romaji
                 })
-                .collect()
-        )
+            })
+            .collect::<Vec<SyncLine>>();
+        
+        if lines.first().map_or(true, |first| first.start_time > Duration::ZERO) {
+            lines.insert(0, SyncLine::default());
+        }
+
+        LyricsContent::Synced(lines)
     } else {
         LyricsContent::Unsynced(
             raw.lines()
