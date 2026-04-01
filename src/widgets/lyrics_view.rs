@@ -23,7 +23,7 @@ impl<'a> Widget for LyricsView<'a> {
                 
                 let active_index = lines
                     .iter()
-                    .position(|line| line.start_time > self.playback_pos)
+                    .position(|line| line.start_time > self.playback_pos + Duration::from_millis(300))
                     .map(|idx| idx.saturating_sub(1))
                     .unwrap_or(lines.len().saturating_sub(1));
 

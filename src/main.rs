@@ -1,26 +1,28 @@
 mod lyrics;
-mod media_manager;
+mod media;
 mod models;
 mod widgets;
 
 use std::{io::Stdout, time::Duration};
 
-use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
 use ratatui::{
     Frame, Terminal, layout::Margin, prelude::CrosstermBackend, style::Stylize, text::Line, widgets::{Block, Paragraph}
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time};
 use color_eyre::{Result, eyre::WrapErr};
+use futures::StreamExt;
 
-use crate::{lyrics::get_romanized_lyrics, media_manager::MediaManager, models::{Lyrics, Track}, widgets::LyricsView};
-
-enum Event {
-    Key(KeyEvent),
-    Tick
-}
+use crate::{
+    lyrics::get_romanized_lyrics,
+    media::{MediaSource, WindowsMediaSource},
+    models::{Lyrics, PlaybackStatus, Track},
+    widgets::LyricsView
+};
 
 enum Action {
     TrackChanged(Track),
+    PlaybackStatusChanged(PlaybackStatus),
     FetchLyrics(Track),
 
     UpdatePlaybackPosition(Duration),
@@ -28,11 +30,6 @@ enum Action {
     LyricsFetched(Lyrics),
     LyricsFetchError(String),
     Quit
-}
-
-enum SpotifyAction {
-    // RefreshTrack,
-    // ToggleAutoRefresh
 }
 
 #[derive(Default)]
@@ -49,12 +46,12 @@ pub struct App {
     tick: usize,
 
     current_track: Option<Track>,
+    playback_status: PlaybackStatus,
     track_position: Duration,
     last_api_track_position: Duration,
     lyrics_state: LyricsState,
 
-    auto_refresh: bool,
-    exit: bool
+    auto_refresh: bool
 }
 
 #[tokio::main]
@@ -66,20 +63,13 @@ async fn main() -> Result<()> {
 
     let mut app = App::default();
 
-    let (event_tx, event_rx) = mpsc::channel(32);
     let (action_tx, action_rx) = mpsc::channel(32);
-    let (spotify_action_tx, spotify_action_rx) = mpsc::channel(16);
-    
-    let event_handle = tokio::spawn(event_task(event_tx.clone()));
-    let media_handle = tokio::spawn(media_task(spotify_action_rx, action_tx.clone()));
 
-    // let local_set = tokio::task::LocalSet::new();
-    // let test_handle = local_set.run_until(async { return 1; });
+    let media_handle = tokio::spawn(media_task(action_tx.clone()));
 
     tokio::select! {
-        result = event_handle => result?,
         result = media_handle => result?,
-        result = run(&mut terminal, &mut app, event_rx, action_rx, action_tx, spotify_action_tx) => result
+        result = run(&mut terminal, &mut app, action_rx, action_tx) => result
     }?;
 
     ratatui::restore();
@@ -89,98 +79,87 @@ async fn main() -> Result<()> {
 async fn run(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-    mut event_rx: mpsc::Receiver<Event>,
     mut action_rx: mpsc::Receiver<Action>,
-    action_tx: mpsc::Sender<Action>,
-    _spotify_action_tx: mpsc::Sender<SpotifyAction>
+    action_tx: mpsc::Sender<Action>
 ) -> Result<()> {
-    while !app.exit {
-        terminal.draw(|frame| render(frame, &app))?;
+    let tick_rate = Duration::from_secs_f64(1.0 / 20.0);
+    let frame_rate = Duration::from_secs_f64(1.0 / 30.0);
+    let mut tick_interval = time::interval(tick_rate);
+    let mut frame_interval = time::interval(frame_rate);
 
-        if let Ok(event) = event_rx.try_recv() {
-            match event {
-                Event::Key(k) => match k.code {
-                    KeyCode::Char('q') => action_tx.send(Action::Quit).await?,
-                    KeyCode::Char('t') if k.kind == KeyEventKind::Press => {
-                        app.auto_refresh = !app.auto_refresh;
-                        if app.auto_refresh {
-                            if let Some(track) = &app.current_track {
-                                action_tx.send(Action::FetchLyrics(track.clone())).await?;
+    let mut stream = EventStream::new();
+
+    loop {
+        tokio::select! {
+            _tick = tick_interval.tick() => {
+                app.tick = app.tick.wrapping_add(1);
+                
+                if app.playback_status == PlaybackStatus::Playing {
+                    app.track_position += tick_rate;
+                }
+            }
+            _frame = frame_interval.tick() => {
+                terminal.draw(|frame| render(frame, &app))?;
+            }
+            Some(Ok(event)) = stream.next() => {
+                match event {
+                    Event::Key(k) => match k.code {
+                        KeyCode::Char('q') => action_tx.send(Action::Quit).await?,
+                        KeyCode::Char('t') if k.kind == KeyEventKind::Press => {
+                            app.auto_refresh = !app.auto_refresh;
+                            if app.auto_refresh {
+                                if let Some(track) = &app.current_track {
+                                    action_tx.send(Action::FetchLyrics(track.clone())).await?;
+                                }
                             }
                         }
+                        _ => {}
                     }
-                    // KeyCode::Char('y') if k.kind == KeyEventKind::Press => {
-                    //     app.track_position = app.track_position + Duration::from_millis(500);
-                    // }
                     _ => {}
-                },
-                Event::Tick => {
-                    app.tick = app.tick.wrapping_add(1);
-                    app.track_position += Duration::from_millis(50);
                 }
             }
-        }
-
-        if let Ok(action) = action_rx.try_recv() {
-            let tx = action_tx.clone();
-            match action {
-                Action::TrackChanged(track) => {
-                    app.current_track = Some(track.clone());
-                    if app.auto_refresh {
-                        let _ = tx.send(Action::FetchLyrics(track)).await;
-                    }
-                }
-                Action::FetchLyrics(track) => {
-                    tracing::info!("fetching lyrics for {}", track);
-                    app.lyrics_state = LyricsState::Loading;
-                    tokio::spawn(async move {
-                        match get_romanized_lyrics(track.clone()).await {
-                            Ok(lyrics_text) => {
-                                let _ = tx.send(Action::LyricsFetched(Lyrics::new(track, lyrics_text))).await;
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Action::LyricsFetchError(e.to_string())).await;
-                            }
+            Some(action) = action_rx.recv() => {
+                let tx = action_tx.clone();
+                match action {
+                    Action::TrackChanged(track) => {
+                        app.current_track = Some(track.clone());
+                        if app.auto_refresh {
+                            let _ = tx.send(Action::FetchLyrics(track)).await;
                         }
-                    });
-                }
-                Action::UpdatePlaybackPosition(position) => {
-                    if position != app.last_api_track_position {
-                        app.track_position = position;
-                        app.last_api_track_position = position;
                     }
-                }
-                Action::LyricsFetched(lyrics) => {
-                    tracing::info!("lyrics loaded: {} lines", lyrics.len());
-                    app.lyrics_state = LyricsState::Loaded(lyrics);
-                }
-                Action::LyricsFetchError(error_str) => {
-                    tracing::error!("lyrics fetch failed: {}", error_str);
-                    app.lyrics_state = LyricsState::Error(error_str);
-                }
-                Action::Quit => app.exit = true,
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn event_task(tx: mpsc::Sender<Event>) -> Result<()> {
-    let mut tick_interval = tokio::time::interval(Duration::from_millis(50));
-    tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    loop {
-        tokio::select! {
-            _ = tick_interval.tick() => {
-                let _ = tx.send(Event::Tick).await;
-            }
-            res = tokio::task::spawn_blocking(|| {
-                event::poll(Duration::from_millis(10))
-            }) => {
-                if res?? {
-                    if let event::Event::Key(key) = event::read().wrap_err("failed to read event")? {
-                        let _ = tx.send(Event::Key(key)).await;
+                    Action::PlaybackStatusChanged(status) => {
+                        app.playback_status = status;
+                    },
+                    Action::FetchLyrics(track) => {
+                        tracing::info!("fetching lyrics for {}", track);
+                        app.lyrics_state = LyricsState::Loading;
+                        tokio::spawn(async move {
+                            match get_romanized_lyrics(track.clone()).await {
+                                Ok(lyrics_text) => {
+                                    let _ = tx.send(Action::LyricsFetched(Lyrics::new(track, lyrics_text))).await;
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Action::LyricsFetchError(e.to_string())).await;
+                                }
+                            }
+                        });
+                    }
+                    Action::UpdatePlaybackPosition(position) => {
+                        if position != app.last_api_track_position {
+                            app.track_position = position;
+                            app.last_api_track_position = position;
+                        }
+                    }
+                    Action::LyricsFetched(lyrics) => {
+                        tracing::info!("lyrics loaded: {} lines", lyrics.len());
+                        app.lyrics_state = LyricsState::Loaded(lyrics);
+                    }
+                    Action::LyricsFetchError(error_str) => {
+                        tracing::error!("lyrics fetch failed: {}", error_str);
+                        app.lyrics_state = LyricsState::Error(error_str);
+                    }
+                    Action::Quit => {
+                        return Ok(());
                     }
                 }
             }
@@ -188,39 +167,51 @@ async fn event_task(tx: mpsc::Sender<Event>) -> Result<()> {
     }
 }
 
-async fn media_task(mut rx: mpsc::Receiver<SpotifyAction>, tx: mpsc::Sender<Action>) -> Result<()> {
+async fn media_task(tx: mpsc::Sender<Action>) -> Result<()> {
+    let mut media = WindowsMediaSource::new().await.wrap_err("failed to create media source")?;
+
     let mut last_track = Track::default();
-    let mut media = MediaManager::new().await.wrap_err("failed to create media manager")?;
-    let mut interval = tokio::time::interval(Duration::from_millis(500));
+    let mut last_playback_status = PlaybackStatus::default();
+
+    let mut interval = time::interval(Duration::from_millis(50));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                media.refresh_session().await.wrap_err("failed to refresh session")?;
+        interval.tick().await;
 
-                match media.media_properties().await {
-                    Ok(track) => {
-                        if track != last_track {
-                            tracing::info!("track changed: {}", track);
-                            last_track = track.clone();
-                            let _ = tx.send(Action::TrackChanged(track)).await;
-                        }
-                    }
-                    Err(e) => tracing::warn!("media sync error: {e}")
-                };
-
-                match media.timeline_position().await {
-                    Ok(position) => {
-                        let _ = tx.send(Action::UpdatePlaybackPosition(position)).await;
-                    }
-                    Err(e) => tracing::warn!("media sync error: {e}"),
-                };
-            }
-            media_action = rx.recv() => {
-                let Some(media_action) = media_action else { return Ok(()); };
-                match media_action {}
-            }
+        if let Err(e) = media.refresh().await {
+            tracing::warn!("failed to refresh session: {e}");
+            continue;
         }
+
+        match media.current_playback_status().await {
+            Ok(status) => {
+                if status != last_playback_status {
+                    tracing::info!("playback status changed: {}", status);
+                    last_playback_status = status;
+                    let _ = tx.send(Action::PlaybackStatusChanged(status));
+                }
+            }
+            Err(e) => tracing::warn!("media sync error: {e}")
+        };
+
+        match media.current_track().await {
+            Ok(track) => {
+                if track != last_track {
+                    tracing::info!("track changed: {}", track);
+                    last_track = track.clone();
+                    let _ = tx.send(Action::TrackChanged(track)).await;
+                }
+            }
+            Err(e) => tracing::warn!("media sync error: {e}")
+        };
+
+        match media.current_playback_position().await {
+            Ok(position) => {
+                let _ = tx.send(Action::UpdatePlaybackPosition(position)).await;
+            }
+            Err(e) => tracing::warn!("media sync error: {e}"),
+        };
     }
 }
 
