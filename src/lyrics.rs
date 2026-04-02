@@ -79,7 +79,7 @@ fn process_lyrics(raw: &str, is_sync: bool) -> LyricsContent {
             .collect::<Vec<SyncLine>>();
         
         if lines.first().map_or(true, |first| first.start_time > Duration::ZERO) {
-            lines.insert(0, SyncLine::default());
+            lines.insert(0, SyncLine { start_time: Duration::ZERO, text: String::from("...") });
         }
 
         LyricsContent::Synced(lines)

@@ -7,7 +7,7 @@ use std::{io::Stdout, time::Duration};
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
 use ratatui::{
-    Frame, Terminal, layout::Margin, prelude::CrosstermBackend, style::Stylize, text::Line, widgets::{Block, Paragraph}
+    Frame, Terminal, layout::Margin, prelude::CrosstermBackend, style::Stylize, text::Line, widgets::{Block, Paragraph, Wrap}
 };
 use tokio::{sync::mpsc, time};
 use color_eyre::{Result, eyre::WrapErr};
@@ -24,7 +24,6 @@ enum Action {
     TrackChanged(Track),
     PlaybackStatusChanged(PlaybackStatus),
     FetchLyrics(Track),
-
     UpdatePlaybackPosition(Duration),
 
     LyricsFetched(Lyrics),
@@ -48,7 +47,6 @@ pub struct App {
     current_track: Option<Track>,
     playback_status: PlaybackStatus,
     track_position: Duration,
-    last_api_track_position: Duration,
     lyrics_state: LyricsState,
 
     auto_refresh: bool
@@ -145,10 +143,7 @@ async fn run(
                         });
                     }
                     Action::UpdatePlaybackPosition(position) => {
-                        if position != app.last_api_track_position {
-                            app.track_position = position;
-                            app.last_api_track_position = position;
-                        }
+                        app.track_position = position;
                     }
                     Action::LyricsFetched(lyrics) => {
                         tracing::info!("lyrics loaded: {} lines", lyrics.len());
@@ -172,6 +167,7 @@ async fn media_task(tx: mpsc::Sender<Action>) -> Result<()> {
 
     let mut last_track = Track::default();
     let mut last_playback_status = PlaybackStatus::default();
+    let mut last_playback_position = Duration::ZERO;
 
     let mut interval = time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -208,7 +204,11 @@ async fn media_task(tx: mpsc::Sender<Action>) -> Result<()> {
 
         match media.current_playback_position().await {
             Ok(position) => {
-                let _ = tx.send(Action::UpdatePlaybackPosition(position)).await;
+                if position != last_playback_position {
+                    last_playback_position = position;
+                    let _ = tx.send(Action::UpdatePlaybackPosition(position)).await;
+                }
+                
             }
             Err(e) => tracing::warn!("media sync error: {e}"),
         };
@@ -252,41 +252,46 @@ fn render(frame: &mut Frame, app: &App) {
         .title(title.centered())
         .title_bottom(keybinds.centered())
         .border_set(ratatui::symbols::border::THICK);
+    frame.render_widget(&block, area);
 
-    let inner_area = block.inner(area);
-    frame.render_widget(block, area);
-
-    let lyrics_area = inner_area.inner(Margin::new(inner_area.width / 4, 1));
+    let area = block
+        .inner(area) // Subtract border
+        .inner(Margin::new(0, 1)); // Subtract margin of 1 pixel above and below
 
     const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     match &app.lyrics_state {
         LyricsState::None => {
             frame.render_widget(
-                Paragraph::new("No track playing").centered(),
-                lyrics_area
+                Paragraph::new("No track playing")
+                    .centered()
+                    .wrap(Wrap { trim: false }),
+                area
             );
         }
         LyricsState::Loading => {
             let spinner = SPINNER[app.tick % SPINNER.len()];
             frame.render_widget(
-                Paragraph::new(format!("{spinner} Fetching lyrics...")).yellow().centered(),
-                lyrics_area
+                Paragraph::new(format!("{spinner} Fetching lyrics..."))
+                    .yellow()
+                    .centered()
+                    .wrap(Wrap { trim: false }),
+                area
             );
         }
         LyricsState::Loaded(lyrics) => {
             frame.render_widget(
-                LyricsView {
-                    lyrics,
-                    playback_pos: app.track_position,
-                },
-                lyrics_area
+                LyricsView::new(lyrics, app.track_position),
+                area
             );
         }
         LyricsState::Error(e) => {
             frame.render_widget(
-                Paragraph::new(e.as_str()).red().centered(),
-                lyrics_area
+                Paragraph::new(e.as_str())
+                    .red()
+                    .centered()
+                    .wrap(Wrap { trim: false }),
+                area
             );
         }
     }
